@@ -1,0 +1,459 @@
+---
+title: "Sandwich Analytics"
+author: "Sebastian Kolstad, Torkild Moen, Kristina Karlsen"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    theme: darkly
+    fig_width: 8
+    fig_height: 8
+    fig_caption: true
+    toc: true
+    toc_depth: 3
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+## Om rapporten
+
+Da det store **Sandwich konsernet** lyste ut en anbudskonkurranse, er den særiøse aktøren ACME Analytics interessert i å delta.
+Sandwich-Konsernet ønsker å utvikle et system som rapporterer salg for alle utsalgsstedene i sitt konsern.
+
+Grunnlaget for anbudskonkurransen er artikkelen: **Sandwich analytics: A dataset comprising one year's weekly sales data correlated with crime, demographics, and weather.** Publisert av Trent J. Spaulding, august 2019 på <https://www.sciencedirect.com>.
+Datasettetene som henger sammen med artikkelen har Spaulding (m.fl) publisert hos Mendeley Data i CSV-format.
+<https://data.mendeley.com/datasets/6htjnfs78b/2>
+
+Dataen inneholder det overskriften tilsier; ett års uklige salg, data på kriminalitet, demografi, vær, arbeidsledighet og butikkenes egenskaper.
+Artikkelen påpeker at dataen er hentet fra virkeligheten i konsernets egen **POS**-system (point of sale), værstasjoner og statlige nettsider.
+Faktiske navn på byer og butikker er anonymisert med "renaming", og det er bare valgt ut 10 butikker for å representere kjeden.
+Så dataanalysen ACME foretar seg omhandler omtrent kun dataen som er presentert av Spalding (m.fl).
+Slik premissene for anbudskonkurransen er lagt opp.
+
+Følgende datapakker er brukt for å genere rapporten i programmet **R**
+
+```{r Laster inn pakker, message=FALSE, warning=FALSE}
+#laster inn de nødvendige pakkene
+library(tidyverse) # Samlepakke
+library(dplyr) # Tilgang til dplyr funksjoner
+library(janitor) # for å rense i dataen
+library(data.table) # for å lese datatabell
+library(lubridate) # For dato-formatering
+library(ggplot2) # For å lage figurer
+library(cowplot) # For å gride figurer
+library(png) # for å legge til bilder
+library(knitr) # for å knite
+library(plotly) # Laster inn en pakke for å lage interaktiv figur
+```
+
+## Oppgave 1 - Lag ett stort datasett
+
+Dette er data ACME laster ned med *fread*-funksjonen som leser en tabell og lager et data frame av den.
+Det likner data.table- funksjonen men den er raskere og mer beleilig da alle kontroller, som *sep*, *colClasses* og *nrows* blir automatisk sett.
+
+```{r Laster ned datasettene}
+#laster inn datasett fra csv-fil
+StoreAttributes <- fread("https://data.mendeley.com/public-files/datasets/6htjnfs78b/files/26afd5e7-90b1-4301-ac5e-5905b38c4ec2/file_downloaded")
+county_crime <- fread("https://data.mendeley.com/public-files/datasets/6htjnfs78b/files/3691994e-2874-4ee6-b215-12e130c96175/file_downloaded")
+county_demographics <- fread("https://data.mendeley.com/public-files/datasets/6htjnfs78b/files/527e7486-7233-460a-99e0-3529b7cd7d49/file_downloaded")
+county_employments <- fread("https://data.mendeley.com/public-files/datasets/6htjnfs78b/files/846ac757-721e-4fd9-a414-5871f60de093/file_downloaded")
+weekly_sales <- fread("https://data.mendeley.com/public-files/datasets/6htjnfs78b/files/b963fdd1-0df9-4257-bd62-65256ec9d57c/file_downloaded")
+weekly_weather <- fread("https://data.mendeley.com/public-files/datasets/6htjnfs78b/files/b8708b3c-c5e8-456e-83f4-9f23f472a840/file_downloaded")
+```
+
+Da er det lastet ned 6 CSV-filer som har data om: County_Crime, County_Demographics, County_Employment, Store_Attributes, Weekly_Sales og Weekly_Weather.
+
+ACME ønsker å spleise datasettene sammen, men først må noen endringer foretas
+
+```{r Endringer i datasett}
+# Gjør om Store_County til "County_Name" så det blir en felles variabel med weekly_sales, siden disse inneholder samme data med ulik "overskrift"
+StoreAttributes <- StoreAttributes %>% 
+  rename(County_Name = Store_County)
+
+ 
+
+# Bruker lubridate for lage uke variabel
+weekly_sales <- weekly_sales %>% 
+  mutate(Week = lubridate::isoweek(mdy(Date)))
+
+# Bruker recode for å koble værstasjoner med sitt respektable "County". 
+weekly_weather <- weekly_weather %>% 
+  mutate(County_Name = recode(Weather_Station, "Appleton Airport" = "Appleton County", "Lake City Airport" = "Lake County", 
+                              "North Town Airport" = "Farm County", "Rail City Airport" = "Rail County", 
+                              "River City Airport" = "River County"))
+```
+
+Nå som datasettene er klar til splesing benyttes left_join fra dplyr-pakken for å lage det samlede datasettet; **BigData**.
+
+```{r Slår sammen datasett}
+# samler datasettene 
+# spesifiserer hvilke variabler datasettene skal spleises på
+BigData <- weekly_sales %>% 
+  left_join(StoreAttributes, by = c("Store_num" = "Store_Num"))
+
+ 
+
+BigData <- BigData %>% 
+  left_join(county_crime, by = "County_Name")
+
+ 
+
+BigData <- BigData %>% 
+  left_join(county_demographics, by = "County_Name")
+
+ 
+
+BigData <- BigData %>% 
+  left_join(county_employments, by = "County_Name")
+
+
+BigData <- BigData %>% 
+  left_join(weekly_weather, by = c("Week" = "Weather_Week", "County_Name"))
+```
+
+Da var seks blitt til én.
+
+## Oppgave 2 - Den ukentlige rapporten
+
+I tråd med anbudskonkurransen ønskes det fra utlyser eksempel på en ukentlig salgsrapport fra **ett** utsalgssted.
+Acme har brukt Googles slumptallsgenerator og har tilfeldig utvalgt butikk nr 11 (River City strip mall) og uke 23 som utgangspunkt i ukesrapporten
+
+```{r Lager datasett for vår butikk}
+s11u23 <- BigData %>%
+  filter(Store_num == "11", Week == "23") #Filtrerer ut butikk nr 11 og uke 23 fra datasettet og lagrer det som s11u23
+
+s11u22 <- BigData %>%
+  filter(Store_num == "11", Week == "22") #Filtrerer ut butikk nr 11 og uke 22 fra datasettet og lagrer det som s11u22
+
+```
+
+```{r Lager datasett for profitt}
+prof22 <- 
+  aggregate(s11u22$Profit ~ s11u22$Week, s11u22, sum) # Legger sammen total profitt i uke 22 for butikk 11
+
+prof23 <-
+  aggregate(s11u23$Profit ~ s11u23$Week, s11u23, sum) # Legger sammen total profitt i uke 23 for butikk 11
+```
+
+```{r Endrer navn og setter sammen profitt datasett}
+colnames(prof22) <- (c("Week", "Profit")) # Endrer navn på kolonner i prof22
+
+colnames(prof23) <- (c("Week", "Profit")) # Endrer navn på kolonner i prof23
+prof <- rbind(prof22, prof23) # Setter sammen prof 22 og prof 23 i ett datasett
+```
+
+Først og fremst ønskes det nok fra konsernledelsen og virksomheten en presentasjon angående lønnsomheten - satt opp mot forrige uke.
+
+```{r Viser profitt}
+prof # Viser datasettet "prof" som viser profitt i uke 22 og 23
+```
+
+| Uke | Profitt     |
+|-----|-------------|
+| 22  | 4366.44 USD |
+| 23  | 5423.95 USD |
+
+Vi regner ut hvor stor økning det var i prosent:
+
+```{r Differanse mellom profitt}
+5423.95 -4366.44
+
+```
+
+```{r Regnestykke for prosent}
+(1057.51/4366.44)*100
+```
+
+Man bemerker seg at i uke 23 tjente butikken 1057.51 USD mer enn uke 22.
+Dette er en økning på 24.2 %
+
+Acme ønsker å visualisere hvordan disse to ukene er satt opp mot hverandre som en helhet med et interaktivt pai-diagram.
+
+```{r Visualisering av profitt i to uker}
+# Lager en figur som viser hvor mye butikken har tjent i uke 22 mot uke 23
+# Datapakken plotly blir brukt og vi definerer type = pie
+profvs <- plot_ly(prof, labels = prof$Week, values = prof$Profit, type = 'pie')
+profvs <- profvs %>% layout(title = 'Profitt uke 22 vs uke 23',
+                      xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+                      yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+
+profvs
+```
+
+Selv om det var 24.2 % økning fra uke 22 til uke 23 utgjør det bare 55.4% eller 10.8% mer, av den helhetlige summen fordelt på begge ukene.
+
+Ukesrapporten gir også tillegsdata om været.
+Tilsynelatene har været hatt lite innvirkning denne "fortnight".
+Om det at virksomheten ligger nært andre virksomheter i et såkalt *strip mall*, hvor 8 virksomheter som anses som konkurrenter innen fast food og 30 virksomheter som regnes som annen konkurranse har betydning - Må det utføres mer utfyllende analyse, som kan diskuteres etter anbudskonkurransen.
+
+```{r Viser temperatur}
+# Sjekker max og min temp for uke 22
+s11u22 %>% 
+  select(Avg_Max_Temp, Avg_Min_Temp)
+# Sjekker max og min temp for uke 23
+s11u23 %>% 
+    select(Avg_Max_Temp, Avg_Min_Temp)
+```
+
+### Antall salg og profitt
+
+For konsernledere og virksomheten selv er det interessant å se hvor stort kvantum som blir solgt i den aktuelle uken.
+
+```{r Figur for salg}
+# Lager en figur som viser hvor mye som er solgt av hver vare i uke 23 i butikk 11
+salgfig <- plot_ly(s11u23, x = s11u23$Description, y = s11u23$Sold, type = 'bar', text = text,
+               marker = list(color = 'rgb(158,202,225)',
+                             line = list(color = 'rgb(8,48,107)',
+                                         width = 1.5))) # bestemmer bredde på stolpene
+salgfig <- salgfig %>% layout(title = "Salg per vare i butikk 11 uke 23", # Setter tittel for figuren
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "Solgt kvantum"))
+```
+
+Figuren er interaktiv med mulighet til å zoome inn og ut for å se nærmere på varer.
+Dette er gjort siden ACME ønsker å vise det **komplette** menyutvalget på X-aksen, og *Antall solgt* på Y-aksen.
+Uten muligheten til å zoome blir det utfordrende å lese varenavnene.
+
+Leser kan observere hver eneste vare, men må bruke den interaktive skaleringsfunksjonen til å tilpasse hvilke varer man vil se på.
+Ved å holde musepeker over en bestemt *stolpe* i *stolpediagrammet* vil det også dukke opp data om produktet som visualiseres i stolpen.
+
+Ser man på *stolpediagrammet* helt utenfra er det lett å registrere de store sprikene mellom sortimentet for *River City Strip Mall*
+
+```{r Viser figur for salg}
+salgfig
+```
+
+"Chips" var uten tvil den mest solgte varen i uke 23, etterfulgt av "Val meal 1 mini mtball chip" (en sub som det følger med chips) og drikkevarer i gitte størelser.
+Vi vet ikke om **POS**-systemet inkluderer chips fra value meals inn i *Chips-dataen*
+
+ACME ønsker videre å visualisere profitt.
+
+```{r Lager figur som viser profitt}
+# Lager ny interaktiv figur som viser hvor mye profitt butikken har i uke 23
+proffig <- plot_ly(s11u23, x = s11u23$Description, y = s11u23$Profit, type = 'bar', text = text,
+                marker = list(color = 'rgb(158,202,225)',
+                              line = list(color = 'rgb(8,48,107)',
+                                          width = 1.5))) # bestemmer bredde på stolpene
+proffig <- proffig %>% layout(title = "Profitt for hver vare i butikk 11 uke 23",
+                        xaxis = list(title = "Vare"),
+                        yaxis = list(title = "Profitt"))
+```
+
+På X-aksen vil man se sortimentet og profitt oppgitt i USD på Y-aksen.
+
+```{r Viser figur for profitt}
+proffig
+```
+
+Figuren viser lønnsomhet av varer i butikk 11 uke 23.
+
+Selv om "Chips" solgte størst kvantum, tjente butikken mest på "Regular Savory Turkey", som solgte under 1/4 av "Chips" sitt solgte kvantum.
+Dette er en vare som kanskje bør reklameres mer for hvis det ikke allerede er gjort, da det ser ut til at man kan tjene mye på denne varen.
+
+Virksomheten taper penger på reward varer samt noen value meals, men dette er sannsynligvis tilbud som skaper faste kunder, så langsiktig; tjener nok utsalget på å *belønne* kundene.
+Kanskje er flere av disse kundene glad i kalkun-sandwicher, som er en proftabel vare.
+
+Det er estimert at butikken bruker 45000 dollar i året på leie.
+
+```{r Viser leie}
+s11u23[1,31] # Viser dataen som estimerer årlig leie
+```
+
+Det vil si 865.4 USD i uka.
+Virksomheten tjener mer enn dette både uke 22 og 23.
+Nå er ikke data på alle utgifter en del av **BigData** for eksempel lønn til **ansatte**, men trolig er virksomheten profitabel.
+
+## Oppgave 3 - Månedlig salg i butikken
+
+\## Oppgave 3 - Månedlig salg i butikken
+
+
+Anbudskonkurransen har anonymisert de 10 utvalgte virksomhetenes navn og vi vet lite om tilstandene til og rundt butikkene, og hvorfor konsumentene handler slik de gjør hos sin nærmeste virksomhet.\
+
+Hvert sted hvor det er en virksomhet har sin egen tilknyttning til stedet.
+
+
+ACME vil igjen vise frem butikk 11 hvor vi ser på den månedlige helheten.
+
+```{r Lager datasett og figurer}
+# Lager et datasett for 
+S11 <- BigData %>% 
+  filter(Store_num == "11")
+
+#Lager et datasett for månedlig profitt og salg i butikk 11
+mps1 <- aggregate(cbind(Profit, Sold) ~ Month + Year, S11, FUN = sum)
+
+# Lager en figur som viser hvor mye butikk 11 har solgt hver måned
+monsal <- ggplot(mps1, aes(x = Month, y = Sold))+
+  geom_bar(stat = "identity", color = "blue", fill = rgb(0.1,0.4,0.5,0.7),
+         width = 0.3)+
+    scale_x_continuous(labels = as.character(mps1$Month), breaks = mps1$Month)+
+    labs(title = "Total salg hver måned for butikk 11",
+        x = "Måned \n mnd 1-3 er 2013, 4-12 er 2012",
+        y = "Varer solgt")
+```
+
+Figuren viser butikk 11 sitt totale antall salg hver måned.
+På X-aksen vises månedene.
+April - desember er observasjoner i 2012.
+Januar - mars er observasjoner i 2013.
+På Y-aksen vises antall varer solgt.
+
+```{r Viser figur for mnd salg}
+monsal
+```
+
+Figuren viser at de tre mest aktive månedene for salg er juli, september og april.
+De tre minst aktive salgsmånedene er januar, november og oktober.
+
+```{r Gjennomsnitt salg og profitt}
+mean(mps1$Sold) # finner hvor mye butikkem solgte i gjennomsnitt
+mean(mps1$Profit) # Finner hvor mye butikken tjene i gjennomsnitt
+```
+
+Butikken solgte i gjennomsnitt 10 150 USD varer pr mnd og tjente i gjennomsnitt 19 094 USD pr mnd, hvor juli er den mest profitable måneden.
+(Tallene er oppgitt i tusener)
+
+Men, la oss se på månedene i nok et stolpediagram
+
+```{r}
+# Lager figur som viser månedlig profitt
+monprof <- ggplot(mps1, aes(x = Month, y = Profit))+
+  geom_bar(stat = "identity", color = "blue", fill = rgb(0.1,0.4,0.5,0.7),
+           width = 0.3)+
+  scale_x_continuous(labels = as.character(mps1$Month), breaks = mps1$Month)+
+  labs(title = "Total profitt hver måned for butikk 11",
+       x = "Måned \n mnd 1-3 er 2013, 4-12 er 2012",
+       y = "Total Profitt")
+```
+
+Figurene blir satt opp komperativt.
+
+```{r plots of monthly sale and profit}
+plot_grid(monsal, monprof, ncol = 2, labels = "AUTO")
+```
+
+På del-figur A ser man en tendens i salgsdatene, der total salg per måned veksler mellom opprykk og nedrykk.
+Tendensen ACME observerer er derimot ikke fullkommen.
+
+Hvordan har forrige måned påvirket nestekommende måned?
+Hvilke produkter utmerker seg?
+
+ACME ville foretrukket at anbudskonkurransen innholdt data fra flere år - slik at man kunne sammenlignet eksempelvis August 2012 mot August 2013, slik at månedsrapportene legger opp til intern konkurranse mot året før.
+
+### Alle butikkene aggregert
+
+```{r Salg på et aggregert nivå}
+BigData %>% 
+  group_by(Store_num) %>% 
+  summarise(Sold = sum(Sold))%>% 
+  ggplot(aes(x = Store_num, y = Sold/1000)) +
+  labs(title = "Total salg for hver butikk",
+       x = "Butikk nummer",
+       y = "Varer solgt / 1000")+
+  geom_bar(stat = "identity",color = "blue", fill = rgb(0.1,0.4,0.5,0.7), width = 0.3) +
+  theme_bw()
+```
+
+Figuren viser hvor mye hver butikk har solgt i perioden vi har data for.
+Antall salg er delt på 1000 for å gjøre det mer leselig.
+
+Datasettet har ikke alle virksomheters egenskaper tilgjengelig- ACME bemerker seg at butikk nr 2 skiller seg veldig fra de andre virksomhetene.
+Hvilken egenskaper butikk nr 2 har som gjør den såpass salgsdyktig blir noen ukesrapporter for seg selv.
+
+## Oppgave 4 - Evolve the Sandwich
+
+Utlyser ønsker at dataen gitt ut i anbudskonkurransen skal brukes til å planlegge et nytt utsalgssted.
+All dataen er interessant å se på men det er ikke all dataen som kan anses å gi en stor effekt.
+
+ACME ønsker å studere en eventuell sammenheng mellom antall salg og drive-trough.
+Interessen kommer av at drive-trough er et populært konsept som øker tilgjengligheten av produktene for kundene.
+
+```{r Finner forhold mellom dt og salg}
+#finner forholdet mellom drive-through og antall salg
+dtData <- BigData %>% 
+  group_by(Store_Drive_Through) %>% 
+  summarise(Sold = sum(Sold))
+
+ 
+
+ 
+
+
+#bruker ifelse for å lage betingelser for utregningen
+dtData <- dtData %>% 
+  mutate(Avg_Sold = ifelse(Store_Drive_Through %in% "Yes", Sold/2, 
+                           ifelse(Store_Drive_Through %in% "No", Sold/8, NA)))
+
+ 
+
+ 
+
+#lager plot  
+dtData %>% 
+  ggplot(aes(x = Store_Drive_Through, y = Avg_Sold)) +
+  geom_bar(stat = "identity", fill = c("pink", "orange")) +
+  labs(title = "Forholdet mellom antall salg og drive-through", 
+       x = "Drive-Through", y = "Gjennomsnittlig salg") +
+  theme_classic()
+#grafen illustrer at antall salg og drive_through har en sammenheng, kan butikkene
+#bedre sine salgsresultater ved å tilby drive-through?
+```
+
+Resultatet figuren viser er at butikker med drive-trough i gjennomsnitt selger for høyere kvantum sammenlignet med butikkene uten drive-trough.
+Derimot kan det tenkes seg til at butikk 2 (med drive-trough) påvirker resultatet betydelig.
+
+Tilsvarende analyse for antall salg og hvorhvidt butikken er nær en skole eller ikke, vurderes også intressant.
+Ved figuren nedenfor vises butikknummer på x-aksen og summen av salg gruppert for butikknummer på y-aksen.
+Fargen på søylene forteller om butikken ligger nær en skole eller ikke.
+
+```{r plot som viser salg og om butikken er nær skole eller ikke}
+#lager plot for se forholdet mellom butikker i nærheten av en skole, og salg
+BigData %>% 
+  group_by(Store_num,Store_Near_School) %>% 
+  summarise(Sold = sum(Sold))%>% 
+  ggplot(aes(x = Store_num, y = Sold, fill = Store_Near_School)) +
+  geom_bar(stat = "identity") +
+  theme_bw()
+```
+
+Fra figuren ovenfor ser man ingen tydelig sammenheng mellom de to variablene.
+Likevel bites det merke i at spesielt 3 av butikkene som er plassert nær en skole har relativt gode salgsresultater.
+På figuren kan man også tydelig se hvordan butikk nummer 2 utmerker seg med sine salgsresultater i forhold til de resterende butikkene.
+Slik som diskutert i slutten av forige oppgave - Butikk 2 er kanskje ikke som de andre virksomhetene.
+
+Til slutt vil ACME analytics undersøke sammenhengen mellom arbeidsledigheten og kvantum solgt gjennom en enkel regresjonsanalyse.
+
+```{r}
+unemployment <- BigData %>% 
+  dplyr::group_by(County_Unemployment_Rate) %>% 
+  dplyr::summarise(Sold=sum(Sold))
+
+ 
+
+
+#finner koefficientene 
+lm(Sold ~ County_Unemployment_Rate, data = unemployment)
+
+ 
+
+ 
+
+#lager nytt plott
+unemployment %>% 
+  ggplot(aes(x = County_Unemployment_Rate, y = Sold)) + 
+  geom_point(color = "#66CC99") +
+  geom_smooth(method = lm) + #lager en linje i plottet basert på koeffisientene vi fant med "lm" funksjonen
+  labs(title = "Forholdet mellom arbeidsledige og salg", 
+       x = "Antall arbeidsledige", y = "Antall salg") +
+  theme_bw()
+```
+
+Nå har vi bare 10 scatterpunkter å ta utgangspunkt fra.
+Så å konkludere med at antall arbeidsledige har liten til ingen innvirkning på salg er vanskelig å si.
+
+Med videre sammarbeid hvor det kan jobbes med mer data vil ACME kunne tegne et bedre bildet.
+Trolig har Drive Trough en positiv effekt på virksomhetene, men om butikken ligger nært en skole eller i et område med relativt høyere arbeidsledighet har ikke all verden å si.
+
+Vi håper smakebiten av ACME Analytics ga mersmak og vi ser fram til videre sammarbeid.
